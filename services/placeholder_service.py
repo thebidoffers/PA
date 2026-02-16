@@ -107,3 +107,15 @@ def extract_missing_markers(document: DocxDocumentType) -> list[str]:
     text = "\n".join(text_chunks)
     found = {match.group(1).strip() for match in MISSING_MARKER_PATTERN.finditer(text)}
     return sorted(found)
+
+
+def extract_placeholders_from_docx(document: DocxDocumentType) -> list[str]:
+    text_chunks: list[str] = [paragraph.text for paragraph in document.paragraphs]
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                text_chunks.extend(paragraph.text for paragraph in cell.paragraphs)
+
+    text = "\n".join(text_chunks)
+    found = {match.group(1).strip() for match in PLACEHOLDER_PATTERN.finditer(text)}
+    return sorted(found)

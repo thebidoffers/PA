@@ -11,7 +11,11 @@ from db.session import SessionLocal
 from models import Document, GenerationRun, Template
 from services.file_service import ensure_dir, sha256_bytes
 from services.normalization_service import normalize_inputs
-from services.placeholder_service import extract_missing_markers, replace_placeholders_in_docx
+from services.placeholder_service import (
+    extract_missing_markers,
+    extract_placeholders_from_docx,
+    replace_placeholders_in_docx,
+)
 
 
 def _insert_paragraph_at_start(document: DocxDocument, text: str) -> None:
@@ -101,9 +105,13 @@ def generate_draft_docx(project_id: int, template_id: int, inputs_json: str | di
             normalized_inputs["source_document_id"] = source_document_id
 
         document = DocxDocument(str(template_path))
+        template_placeholders = extract_placeholders_from_docx(document)
         replaced_missing = replace_placeholders_in_docx(document, normalized_inputs)
         marker_missing = extract_missing_markers(document)
-        all_missing_fields = sorted(set(replaced_missing + marker_missing + normalization_missing))
+        normalization_missing_filtered = [
+            field for field in normalization_missing if field in template_placeholders
+        ]
+        all_missing_fields = sorted(set(replaced_missing + marker_missing + normalization_missing_filtered))
         _prepend_missing_information(document, all_missing_fields)
 
         output_dir = ensure_dir(Path("storage") / "projects" / str(project_id) / "generated")
@@ -162,6 +170,7 @@ def generate_draft_docx(project_id: int, template_id: int, inputs_json: str | di
             "generation_run_id": run.id,
             "rendered_fields": rendered_fields_map,
             "source_document_id": source_document_id,
+            "template_placeholders": template_placeholders,
         }
     finally:
         session.close()
