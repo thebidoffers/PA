@@ -69,7 +69,7 @@ class GenerationRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("prospectus_projects.id"), nullable=False)
     template_id: Mapped[int] = mapped_column(ForeignKey("templates.id"), nullable=False)
-    source_document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), nullable=False)
+    source_document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
     inputs_json: Mapped[str] = mapped_column(Text, nullable=False)
     output_document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
