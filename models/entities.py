@@ -72,6 +72,7 @@ class GenerationRun(Base):
     source_document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
     inputs_json: Mapped[str] = mapped_column(Text, nullable=False)
+    output_document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
     output_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 

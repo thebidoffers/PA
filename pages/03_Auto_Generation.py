@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import streamlit as st
 
@@ -6,6 +7,7 @@ from db.init_db import init_db
 from db.session import SessionLocal
 from models import Document, GenerationRun, ProspectusProject, Template
 from services.document_service import extract_preview_and_outline
+from services.generation_service import generate_draft_docx
 
 init_db()
 
@@ -77,17 +79,26 @@ confirm_disclaimer = st.checkbox(
 )
 
 if st.button("Generate"):
-    if not confirm_disclaimer:
+    required_errors: list[str] = []
+    if not issuer_name.strip() or issuer_name.strip().startswith("[[MISSING:"):
+        required_errors.append("issuer.name is required.")
+    if not offer_size.strip() or offer_size.strip().startswith("[[MISSING:"):
+        required_errors.append("offer.size is required.")
+
+    if required_errors:
+        for error in required_errors:
+            st.error(error)
+    elif not confirm_disclaimer:
         st.error("You must confirm the disclaimer before generating.")
     else:
         inputs_payload = {
-            "issuer": {"name": issuer_name or "TBD"},
+            "issuer": {"name": issuer_name.strip()},
             "offer": {
-                "size": offer_size or "[[MISSING: offer.size]]",
-                "price_range": offer_price_range or "[[MISSING: offer.price_range]]",
+                "size": offer_size.strip(),
+                "price_range": offer_price_range.strip() or "[[MISSING: offer.price_range]]",
             },
-            "key_dates": key_dates or "[[MISSING: key_dates]]",
-            "business_description": business_description or "[[MISSING: business_description]]",
+            "key_dates": key_dates.strip() or "[[MISSING: key_dates]]",
+            "business_description": business_description.strip() or "[[MISSING: business_description]]",
             "risk_factors": [rf.strip() for rf in risk_factors.splitlines() if rf.strip()],
             "source_document_id": source_document.id,
             "template_id": template.id,
@@ -100,12 +111,27 @@ if st.button("Generate"):
                 project_id=project.id,
                 template_id=template.id,
                 source_document_id=source_document.id,
-                status="completed",
+                status="pending",
                 inputs_json=json.dumps(inputs_payload),
                 output_path=None,
             )
             session.add(generation_run)
             session.commit()
-            st.success(f"Generation run #{generation_run.id} recorded with placeholder status completed.")
+
+            result = generate_draft_docx(project.id, template.id, inputs_payload)
         finally:
             session.close()
+
+        output_path = Path(result["output_path"])
+        st.success(f"Generation run #{result['generation_run_id']} completed.")
+        if result["missing_fields"]:
+            st.warning("Missing fields: " + ", ".join(result["missing_fields"]))
+
+        with output_path.open("rb") as generated_file:
+            st.download_button(
+                label="Download Generated Draft DOCX",
+                data=generated_file.read(),
+                file_name=output_path.name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key=f"generated_download_{result['document_id']}",
+            )
