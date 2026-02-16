@@ -1,0 +1,112 @@
+{
+  "schema_id": "talabat_v1",
+  "title": "Talabat-aligned IPO Inputs",
+  "description": "Typed input schema for Talabat-style prospectus generation fields.",
+  "fields": [
+    {
+      "path": "issuer.name",
+      "label": "Issuer Name",
+      "type": "string",
+      "required": true,
+      "help_text": "Legal issuer name as it should appear in the prospectus.",
+      "example": "Talabat Holding plc"
+    },
+    {
+      "path": "offer.offer_shares",
+      "label": "Offer Shares",
+      "type": "integer",
+      "required": true,
+      "help_text": "Total number of Offer Shares as an integer count (comma formatting will be applied automatically).",
+      "example": "3493236093"
+    },
+    {
+      "path": "offer.percentage_offered",
+      "label": "Percentage Offered",
+      "type": "percent",
+      "required": false,
+      "help_text": "Percentage of issued share capital being offered.",
+      "example": "15"
+    },
+    {
+      "path": "offer.nominal_value_per_share_aed",
+      "label": "Nominal Value per Share (AED)",
+      "type": "decimal",
+      "required": false,
+      "help_text": "Nominal value of each share in AED.",
+      "example": "0.04"
+    },
+    {
+      "path": "offer.price_range_low_aed",
+      "label": "Offer Price Range per Offer Share (AED) - Low",
+      "type": "decimal",
+      "required": true,
+      "help_text": "Lower bound of the Offer Price Range per Offer Share in AED.",
+      "example": "1.30"
+    },
+    {
+      "path": "offer.price_range_high_aed",
+      "label": "Offer Price Range per Offer Share (AED) - High",
+      "type": "decimal",
+      "required": true,
+      "help_text": "Upper bound of the Offer Price Range per Offer Share in AED.",
+      "example": "1.50"
+    },
+    {
+      "path": "offer.currency",
+      "label": "Currency",
+      "type": "fixed",
+      "required": true,
+      "fixed_value": "AED",
+      "help_text": "Currency is fixed to AED for Talabat schema.",
+      "example": "AED"
+    },
+    {
+      "path": "key_dates",
+      "label": "Key Dates",
+      "type": "string",
+      "required": false,
+      "help_text": "Key timetable details (free text for now).",
+      "example": "Bookbuilding opens on TBD and closes on TBD"
+    },
+    {
+      "path": "business_description",
+      "label": "Business Description",
+      "type": "rich_text",
+      "required": false,
+      "help_text": "Summary of issuer operations and strategy.",
+      "example": "The Group operates a leading online food delivery platform in MENA."
+    },
+    {
+      "path": "risk_factors",
+      "label": "Risk Factors",
+      "type": "list_string",
+      "required": false,
+      "help_text": "One risk factor per line in the UI.",
+      "example": "Risks related to regional macroeconomic conditions"
+    },
+    {
+      "path": "tranche_1.min_subscription_aed",
+      "label": "Tranche 1 Minimum Subscription (AED)",
+      "type": "integer",
+      "required": false,
+      "help_text": "Minimum subscription amount for Tranche 1 in AED.",
+      "example": "5000"
+    },
+    {
+      "path": "tranche_1.increment_aed",
+      "label": "Tranche 1 Increment (AED)",
+      "type": "integer",
+      "required": false,
+      "help_text": "Subscription increment for Tranche 1 in AED.",
+      "example": "1000"
+    },
+    {
+      "path": "tranche_2.min_subscription_aed",
+      "label": "Tranche 2 Minimum Subscription (AED)",
+      "type": "integer",
+      "required": false,
+      "help_text": "Minimum subscription amount for Tranche 2 in AED.",
+      "example": "1000000"
+    }
+  ]
+}
