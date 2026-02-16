@@ -5,3 +5,4 @@ __pycache__/
 *.db
 .DS_Store
 .streamlit/secrets.toml
+storage/
