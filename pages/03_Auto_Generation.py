@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
+from docx import Document as DocxDocument
 
 from db.init_db import init_db
 from db.session import SessionLocal
@@ -10,6 +11,7 @@ from models import Document, ProspectusProject, Template
 from services.document_service import extract_preview_and_outline
 from services.generation_service import generate_draft_docx
 from services.normalization_service import normalize_inputs
+from services.placeholder_service import extract_placeholders_from_docx
 
 SCHEMA_PATH = Path("prompts/input_schema_talabat.json")
 
@@ -74,6 +76,12 @@ def _build_inputs_payload(template_id: int, project_id: int, source_document_id:
 
 template = st.selectbox("Template", options=templates, format_func=lambda t: f"#{t.id} {t.name} ({t.status})")
 project = st.selectbox("Project", options=projects, format_func=lambda p: f"#{p.id} {p.name}")
+
+template_doc = DocxDocument(template.file_path)
+template_placeholders = extract_placeholders_from_docx(template_doc)
+if not template_placeholders:
+    st.error("Selected template has placeholder_count=0. Generation is blocked. Use Templates → Auto-Parameterize from Source Prospectus first.")
+    st.stop()
 
 session = SessionLocal()
 try:
@@ -234,7 +242,7 @@ if st.button("Generate"):
         output_path = Path(result["output_path"])
         st.success(f"Generation run #{result['generation_run_id']} completed.")
         if result["missing_fields"]:
-            st.warning("Missing fields: " + ", ".join(result["missing_fields"]))
+            st.warning("Missing fields (template-driven): " + ", ".join(result["missing_fields"]))
 
         with output_path.open("rb") as generated_file:
             st.download_button(

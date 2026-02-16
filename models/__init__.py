@@ -3,6 +3,7 @@ from models.entities import (
     Document,
     ExtractedStructure,
     GenerationRun,
+    ProspectusAnalysis,
     ProspectusProject,
     Template,
     User,
@@ -14,6 +15,7 @@ __all__ = [
     "ProspectusProject",
     "Document",
     "ExtractedStructure",
+    "ProspectusAnalysis",
     "GenerationRun",
     "AuditLog",
 ]

@@ -24,6 +24,7 @@ class Template(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -60,6 +61,16 @@ class ExtractedStructure(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), nullable=False)
     outline_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ProspectusAnalysis(Base):
+    __tablename__ = "prospectus_analysis"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("prospectus_projects.id"), nullable=False)
+    source_document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), nullable=False)
+    analysis_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 

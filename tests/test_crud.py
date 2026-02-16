@@ -1,4 +1,5 @@
 import importlib
+import sys
 
 import pytest
 
@@ -12,8 +13,10 @@ def test_template_and_document_crud(tmp_path, monkeypatch):
     session_module = importlib.import_module("db.session")
     importlib.reload(session_module)
 
+    session_module.Base.metadata.clear()
+    sys.modules.pop("models", None)
+    sys.modules.pop("models.entities", None)
     models_module = importlib.import_module("models.entities")
-    importlib.reload(models_module)
 
     base = session_module.Base
     engine = session_module.engine

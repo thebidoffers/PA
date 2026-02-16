@@ -3,6 +3,7 @@ import pytest
 pytest.importorskip("docx")
 
 import importlib
+import sys
 import json
 from pathlib import Path
 
@@ -16,8 +17,10 @@ def test_generate_draft_docx_creates_file_and_db_rows(tmp_path, monkeypatch):
     session_module = importlib.import_module("db.session")
     importlib.reload(session_module)
 
+    session_module.Base.metadata.clear()
+    sys.modules.pop("models", None)
+    sys.modules.pop("models.entities", None)
     models_module = importlib.import_module("models.entities")
-    importlib.reload(models_module)
 
     generation_service = importlib.import_module("services.generation_service")
     importlib.reload(generation_service)
@@ -105,6 +108,14 @@ def test_generate_draft_docx_creates_file_and_db_rows(tmp_path, monkeypatch):
         assert "AED 1.30 – AED 1.50" in generated_text
         assert "Missing Information" in generated_text
         assert "[[MISSING: issuer.country]]" in generated_text
+        assert "key_dates" not in result["missing_fields"]
+        assert sorted(result["template_placeholders"]) == [
+            "issuer.country",
+            "issuer.name",
+            "offer.offer_shares",
+            "offer.price_range",
+            "offer.size",
+        ]
     finally:
         session.close()
 
@@ -116,8 +127,10 @@ def test_generate_draft_docx_supports_template_as_source(tmp_path, monkeypatch):
     session_module = importlib.import_module("db.session")
     importlib.reload(session_module)
 
+    session_module.Base.metadata.clear()
+    sys.modules.pop("models", None)
+    sys.modules.pop("models.entities", None)
     models_module = importlib.import_module("models.entities")
-    importlib.reload(models_module)
 
     generation_service = importlib.import_module("services.generation_service")
     importlib.reload(generation_service)
