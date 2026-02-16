@@ -12,13 +12,37 @@ from models import Template
 from services.file_service import ensure_dir, sha256_bytes
 from services.prospectus_analysis_service import analyze_prospectus
 
+TARGET_FIELDS = {
+    "issuer.name": "{{issuer.name}}",
+    "issuer.short_name": "{{issuer.short_name}}",
+    "offer.offer_shares": "{{offer.offer_shares}}",
+    "offer.percentage_offered": "{{offer.percentage_offered}}",
+    "offer.price_range": "{{offer.price_range}}",
+    "offer.price_range_low": "{{offer.price_range_low}}",
+    "offer.price_range_high": "{{offer.price_range_high}}",
+    "offer.nominal_value_per_share": "{{offer.nominal_value_per_share}}",
+}
 
-PRICE_RANGE_VARIANTS = [
-    "{currency} {low:.2f} – {currency} {high:.2f}",
-    "{currency} {low:.2f}-{currency} {high:.2f}",
-    "{currency} {low:.2f} - {currency} {high:.2f}",
-    "{currency} {low:.2f} to {currency} {high:.2f}",
-]
+
+class ReplacementRule:
+    def __init__(
+        self,
+        field: str,
+        placeholder: str,
+        patterns: list[re.Pattern[str]],
+        requires_context: re.Pattern[str] | None = None,
+    ) -> None:
+        self.field = field
+        self.placeholder = placeholder
+        self.patterns = patterns
+        self.requires_context = requires_context
+
+
+NOMINAL_CONTEXT_PATTERN = re.compile(r"nominal\s+value(?:\s+per\s+share)?", re.IGNORECASE)
+SHORT_NAME_INFERENCE_PATTERN = re.compile(
+    r"\(\s*the\s+[\"'‘’]Company[\"'‘’]\s+or\s+[\"'‘’](?P<short>[A-Za-z0-9][^\"'‘’]{1,50})[\"'‘’]\s*\)",
+    re.IGNORECASE,
+)
 
 
 def _replace_match_in_runs(paragraph: Paragraph, pattern: re.Pattern[str], replacement: str) -> int:
@@ -74,6 +98,19 @@ def _iter_containers(document: DocxDocument):
     yield document, "document"
     for t_index, table in enumerate(document.tables):
         yield from _iter_table(table, f"document/tables/{t_index}")
+    for section_index, section in enumerate(document.sections):
+        section_roots = [
+            (section.header, f"sections/{section_index}/header/default"),
+            (section.first_page_header, f"sections/{section_index}/header/first_page"),
+            (section.even_page_header, f"sections/{section_index}/header/even_page"),
+            (section.footer, f"sections/{section_index}/footer/default"),
+            (section.first_page_footer, f"sections/{section_index}/footer/first_page"),
+            (section.even_page_footer, f"sections/{section_index}/footer/even_page"),
+        ]
+        for root, path in section_roots:
+            yield root, path
+            for t_index, table in enumerate(root.tables):
+                yield from _iter_table(table, f"{path}/tables/{t_index}")
 
 
 def _iter_table(table: Table, table_path: str):
@@ -85,22 +122,45 @@ def _iter_table(table: Table, table_path: str):
                 yield from _iter_table(nested, f"{cell_path}/tables/{nested_t_index}")
 
 
-def _replace_field(
+def _count_pattern_matches(pattern: re.Pattern[str], text: str) -> int:
+    return sum(1 for _ in pattern.finditer(text))
+
+
+def _apply_rule(
     document: DocxDocument,
-    placeholder: str,
-    patterns: list[re.Pattern[str]],
+    rule: ReplacementRule,
     allowed_paths: set[str],
-) -> list[dict[str, Any]]:
-    report_items: list[dict[str, Any]] = []
+) -> dict[str, Any]:
+    report = {
+        "field": rule.field,
+        "placeholder": rule.placeholder,
+        "found_count": 0,
+        "replaced_count": 0,
+        "skipped_count": 0,
+        "sample_locations": [],
+    }
     block_counter = 0
     for container, container_path in _iter_containers(document):
         for p_index, paragraph in enumerate(container.paragraphs):
             if container_path == "document":
                 location_path = f"document/paragraphs/{p_index}"
-                block_type = "paragraph"
             else:
                 location_path = f"{container_path}/paragraphs/{p_index}"
-                block_type = "table_cell"
+
+            if rule.requires_context and not rule.requires_context.search(paragraph.text):
+                block_counter += 1
+                continue
+
+            found_here = sum(_count_pattern_matches(pattern, paragraph.text) for pattern in rule.patterns)
+            if found_here == 0:
+                block_counter += 1
+                continue
+
+            report["found_count"] += found_here
+            if len(report["sample_locations"]) < 5:
+                report["sample_locations"].append(
+                    {"block_id": f"block-{block_counter}", "location_path": location_path}
+                )
 
             if allowed_paths:
                 is_allowed = any(
@@ -108,64 +168,166 @@ def _replace_field(
                     for allowed in allowed_paths
                 )
                 if not is_allowed:
+                    report["skipped_count"] += found_here
                     block_counter += 1
                     continue
 
-            original_text = paragraph.text
             total_here = 0
-            for pattern in patterns:
-                total_here += _replace_match_in_runs(paragraph, pattern, placeholder)
-
-            if total_here > 0:
-                report_items.append(
-                    {
-                        "block_id": f"block-{block_counter}",
-                        "block_type": block_type,
-                        "location_path": location_path,
-                        "placeholder": placeholder,
-                        "count": total_here,
-                        "original_text_snippet": original_text[:160],
-                    }
-                )
+            for pattern in rule.patterns:
+                total_here += _replace_match_in_runs(paragraph, pattern, rule.placeholder)
+            report["replaced_count"] += total_here
             block_counter += 1
-    return report_items
+    return report
 
 
-def _build_patterns(inputs: dict[str, Any]) -> dict[str, list[re.Pattern[str]]]:
+def _normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _number_variants(value: float) -> list[str]:
+    rounded = round(float(value), 3)
+    base = f"{rounded:.3f}".rstrip("0").rstrip(".")
+    variants = {
+        base,
+        f"{rounded:.1f}",
+        f"{rounded:.2f}",
+        f"{rounded:.3f}",
+    }
+    return sorted({v for v in variants if re.match(r"^\d+(?:\.\d{1,3})?$", v)})
+
+
+def _build_number_pattern(value: float) -> str:
+    return "(?:" + "|".join(re.escape(v) for v in _number_variants(value)) + ")"
+
+
+def _infer_issuer_short_name(document: DocxDocument) -> str | None:
+    for container, _ in _iter_containers(document):
+        for paragraph in container.paragraphs:
+            match = SHORT_NAME_INFERENCE_PATTERN.search(paragraph.text)
+            if match:
+                short_name = _normalize_whitespace(match.group("short"))
+                if short_name and short_name.lower() != "company":
+                    return short_name
+    return None
+
+
+def _build_rules(document: DocxDocument, inputs: dict[str, Any]) -> list[ReplacementRule]:
     issuer_name = str(inputs.get("issuer", {}).get("name") or "").strip()
+    issuer_short_name = str(inputs.get("issuer", {}).get("short_name") or "").strip()
     offer = inputs.get("offer", {})
 
-    patterns: dict[str, list[re.Pattern[str]]] = {}
+    rules: list[ReplacementRule] = []
 
     if issuer_name:
-        escaped = re.escape(issuer_name)
-        patterns["{{issuer.name}}"] = [re.compile(escaped), re.compile(escaped, re.IGNORECASE)]
+        normalized_issuer = _normalize_whitespace(issuer_name)
+        issuer_pattern = re.sub(r"\s+", r"\\s+", re.escape(normalized_issuer))
+        rules.append(
+            ReplacementRule(
+                field="issuer.name",
+                placeholder=TARGET_FIELDS["issuer.name"],
+                patterns=[
+                    re.compile(re.escape(issuer_name)),
+                    re.compile(issuer_pattern, re.IGNORECASE),
+                ],
+            )
+        )
+
+    inferred_short_name = _infer_issuer_short_name(document)
+    short_name = issuer_short_name or inferred_short_name
+    if short_name:
+        rules.append(
+            ReplacementRule(
+                field="issuer.short_name",
+                placeholder=TARGET_FIELDS["issuer.short_name"],
+                patterns=[re.compile(rf"\b{re.escape(short_name)}\b", re.IGNORECASE)],
+            )
+        )
 
     offer_shares = offer.get("offer_shares")
     if offer_shares is not None:
         formatted = f"{int(offer_shares):,}"
-        patterns["{{offer.offer_shares}}"] = [re.compile(re.escape(formatted))]
+        rules.append(
+            ReplacementRule(
+                field="offer.offer_shares",
+                placeholder=TARGET_FIELDS["offer.offer_shares"],
+                patterns=[re.compile(re.escape(formatted))],
+            )
+        )
 
     percentage = offer.get("percentage_offered")
     if percentage is not None:
         percent_text = f"{float(percentage):g}%"
-        patterns["{{offer.percentage_offered}}"] = [re.compile(re.escape(percent_text))]
+        rules.append(
+            ReplacementRule(
+                field="offer.percentage_offered",
+                placeholder=TARGET_FIELDS["offer.percentage_offered"],
+                patterns=[re.compile(re.escape(percent_text))],
+            )
+        )
 
     nominal = offer.get("nominal_value_per_share_aed")
     if nominal is not None:
-        nominal_text = f"AED {float(nominal):.2f}"
-        patterns["{{offer.nominal_value_per_share}}"] = [re.compile(re.escape(nominal_text), re.IGNORECASE)]
+        nominal_number_pattern = _build_number_pattern(float(nominal))
+        rules.append(
+            ReplacementRule(
+                field="offer.nominal_value_per_share",
+                placeholder=TARGET_FIELDS["offer.nominal_value_per_share"],
+                patterns=[re.compile(rf"\bAED\s*{nominal_number_pattern}\b", re.IGNORECASE)],
+                requires_context=NOMINAL_CONTEXT_PATTERN,
+            )
+        )
 
     low = offer.get("price_range_low_aed")
     high = offer.get("price_range_high_aed")
     if low is not None and high is not None:
-        variants = [
-            v.format(currency="AED", low=float(low), high=float(high))
-            for v in PRICE_RANGE_VARIANTS
-        ]
-        patterns["{{offer.price_range}}"] = [re.compile(re.escape(v), re.IGNORECASE) for v in variants]
+        low_pattern = _build_number_pattern(float(low))
+        high_pattern = _build_number_pattern(float(high))
+        rules.append(
+            ReplacementRule(
+                field="offer.price_range",
+                placeholder=TARGET_FIELDS["offer.price_range"],
+                patterns=[
+                    re.compile(
+                        rf"\bAED\s*{low_pattern}\s*(?:[\-–—]\s*(?:AED\s*)?|to\s+(?:AED\s*)?){high_pattern}\b",
+                        re.IGNORECASE,
+                    )
+                ],
+            )
+        )
+        rules.append(
+            ReplacementRule(
+                field="offer.price_range_low",
+                placeholder=TARGET_FIELDS["offer.price_range_low"],
+                patterns=[re.compile(rf"\bAED\s*{low_pattern}\b", re.IGNORECASE)],
+            )
+        )
+        rules.append(
+            ReplacementRule(
+                field="offer.price_range_high",
+                placeholder=TARGET_FIELDS["offer.price_range_high"],
+                patterns=[re.compile(rf"\bAED\s*{high_pattern}\b", re.IGNORECASE)],
+            )
+        )
 
-    return patterns
+    return rules
+
+
+def _count_potentially_skipped_textboxes(document: DocxDocument) -> int:
+    parts = [document.part]
+    for section in document.sections:
+        parts.extend(
+            [
+                section.header.part,
+                section.first_page_header.part,
+                section.even_page_header.part,
+                section.footer.part,
+                section.first_page_footer.part,
+                section.even_page_footer.part,
+            ]
+        )
+
+    unique_parts = {part.partname: part for part in parts}.values()
+    return sum(len(part._element.xpath(".//*[local-name()='txbxContent']")) for part in unique_parts)
 
 
 def _next_template_version(session, template_name: str) -> int:
@@ -190,6 +352,7 @@ def parameterize_template_from_source(
     source_document_id: int,
     project_id: int,
     aliases: dict[str, list[str]] | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     _ = aliases
     analysis = analyze_prospectus(
@@ -204,19 +367,55 @@ def parameterize_template_from_source(
     }
 
     document = DocxDocument(source_docx_path)
-    patterns = _build_patterns(inputs)
-    report_entries: list[dict[str, Any]] = []
+    rules = _build_rules(document, inputs)
+    field_reports = {field: {"found_count": 0, "replaced_count": 0, "skipped_count": 0, "sample_locations": []} for field in TARGET_FIELDS}
 
-    for placeholder, pattern_list in patterns.items():
-        report_entries.extend(_replace_field(document, placeholder, pattern_list, allowed_paths))
+    for rule in rules:
+        rule_report = _apply_rule(document, rule, allowed_paths)
+        field_reports[rule.field] = {
+            "found_count": rule_report["found_count"],
+            "replaced_count": rule_report["replaced_count"],
+            "skipped_count": rule_report["skipped_count"],
+            "sample_locations": rule_report["sample_locations"],
+        }
 
-    placeholder_count = sum(item["count"] for item in report_entries)
-    unresolved = sorted({placeholder for placeholder in patterns if placeholder not in {r['placeholder'] for r in report_entries}})
+    placeholder_count = sum(report["replaced_count"] for report in field_reports.values())
+    placeholders_replaced = sorted(
+        TARGET_FIELDS[field]
+        for field, report in field_reports.items()
+        if report["replaced_count"] > 0
+    )
+    unresolved = sorted(
+        TARGET_FIELDS[field] for field, report in field_reports.items() if report["found_count"] == 0
+    )
+    potentially_skipped_textboxes = _count_potentially_skipped_textboxes(document)
+    notes: list[str] = []
+    if potentially_skipped_textboxes > 0:
+        notes.append(
+            "python-docx cannot reliably edit text boxes/shapes; replacements there may be skipped."
+        )
 
     if placeholder_count == 0:
         raise ValueError(
             "No placeholders were inserted. This is likely a static prospectus with unmatched patterns for the provided inputs."
         )
+
+    report = {
+        "placeholder_count": placeholder_count,
+        "placeholders": placeholders_replaced,
+        "fields": field_reports,
+        "unresolved": unresolved,
+        "potentially_skipped": {"textboxes_or_shapes": potentially_skipped_textboxes},
+        "notes": notes,
+    }
+
+    if dry_run:
+        return {
+            "template_id": None,
+            "new_template_docx_path": None,
+            "parameterization_report": report,
+            "analysis": analysis,
+        }
 
     session = SessionLocal()
     try:
@@ -237,8 +436,8 @@ def parameterize_template_from_source(
             "source_template_id": base_template_id,
             "parameterized_from_document_id": source_document_id,
             "placeholder_count": placeholder_count,
-            "report": report_entries,
             "analysis_counts": analysis["counts"],
+            "parameterization": report,
         }
 
         template = Template(
@@ -256,11 +455,7 @@ def parameterize_template_from_source(
         return {
             "template_id": template.id,
             "new_template_docx_path": str(output_path),
-            "parameterization_report": {
-                "placeholder_count": placeholder_count,
-                "replacements": report_entries,
-                "unresolved": unresolved,
-            },
+            "parameterization_report": report,
             "analysis": analysis,
         }
     finally:
