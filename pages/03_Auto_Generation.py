@@ -3,22 +3,27 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
-from docx import Document as DocxDocument
 
 from db.init_db import init_db
 from db.session import SessionLocal
 from models import Document, ProspectusProject, Template
+from services.auto_generation_form_service import (
+    build_raw_inputs_payload,
+    build_template_form_spec,
+    extract_template_placeholders,
+    find_unresolved_template_placeholders,
+    load_schema,
+    validate_required_paths,
+)
+from services.deal_profile_service import get_latest_profile, save_profile
 from services.document_service import extract_preview_and_outline
 from services.generation_service import generate_draft_docx
 from services.normalization_service import normalize_inputs
-from services.placeholder_service import extract_placeholders_from_docx
-
-SCHEMA_PATH = Path("prompts/input_schema_talabat.json")
 
 init_db()
 
 st.title("AUTO GENERATION")
-st.caption("Validated inputs + assembly + generation runs.")
+st.caption("Schema-driven deal inputs + assembly + generation runs.")
 
 session = SessionLocal()
 try:
@@ -31,11 +36,12 @@ if not templates or not projects:
     st.info("You need at least one template and one project to start generation.")
     st.stop()
 
-if not SCHEMA_PATH.exists():
-    st.error(f"Talabat schema file is missing: {SCHEMA_PATH}")
+try:
+    schema = load_schema()
+except (FileNotFoundError, ValueError) as exc:
+    st.error(str(exc))
     st.stop()
 
-schema = json.loads(SCHEMA_PATH.read_text())
 field_meta = {field["path"]: field for field in schema["fields"]}
 
 
@@ -44,44 +50,51 @@ def _field_help(path: str) -> str:
     return f"{field['help_text']} Example: {field['example']}"
 
 
-def _build_inputs_payload(template_id: int, project_id: int, source_document_id: int | None, use_template_as_source: bool) -> dict[str, Any]:
-    risk_lines = [line.strip() for line in st.session_state.get("risk_factors_input", "").splitlines() if line.strip()]
-    return {
-        "schema_id": schema["schema_id"],
-        "issuer": {"name": st.session_state.get("issuer_name", "").strip()},
-        "offer": {
-            "offer_shares": st.session_state.get("offer_offer_shares"),
-            "percentage_offered": st.session_state.get("offer_percentage_offered"),
-            "nominal_value_per_share_aed": st.session_state.get("offer_nominal_value_per_share_aed"),
-            "price_range_low_aed": st.session_state.get("offer_price_range_low_aed"),
-            "price_range_high_aed": st.session_state.get("offer_price_range_high_aed"),
-            "currency": "AED",
-        },
-        "key_dates": st.session_state.get("key_dates", "").strip(),
-        "business_description": st.session_state.get("business_description", "").strip(),
-        "risk_factors": risk_lines,
-        "tranche_1": {
-            "min_subscription_aed": st.session_state.get("tranche_1_min_subscription_aed"),
-            "increment_aed": st.session_state.get("tranche_1_increment_aed"),
-        },
-        "tranche_2": {
-            "min_subscription_aed": st.session_state.get("tranche_2_min_subscription_aed"),
-        },
-        "source_document_id": source_document_id,
-        "use_template_as_source": use_template_as_source,
-        "template_id": template_id,
-        "project_id": project_id,
-    }
+def _field_state_key(path: str) -> str:
+    return f"deal_input__{path.replace('.', '__')}"
+
+
+def _coerce_loaded_value(path: str, value: Any) -> Any:
+    field_type = field_meta[path]["type"]
+    if field_type == "list_string":
+        if isinstance(value, list):
+            return "\n".join(str(item) for item in value)
+        return "" if value is None else str(value)
+    return value
+
+
+def _set_form_values(values_by_path: dict[str, Any]) -> None:
+    for path, value in values_by_path.items():
+        st.session_state[_field_state_key(path)] = _coerce_loaded_value(path, value)
+
+
+def _deep_get(data: dict[str, Any], path: str) -> Any:
+    current: Any = data
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _extract_values_for_paths(payload: dict[str, Any], paths: list[str]) -> dict[str, Any]:
+    return {path: _deep_get(payload, path) for path in paths}
 
 
 template = st.selectbox("Template", options=templates, format_func=lambda t: f"#{t.id} {t.name} ({t.status})")
 project = st.selectbox("Project", options=projects, format_func=lambda p: f"#{p.id} {p.name}")
 
-template_doc = DocxDocument(template.file_path)
-template_placeholders = extract_placeholders_from_docx(template_doc)
+template_placeholders = extract_template_placeholders(Path(template.file_path))
 if not template_placeholders:
-    st.error("Selected template has placeholder_count=0. Generation is blocked. Use Templates → Auto-Parameterize from Source Prospectus first.")
+    st.error(
+        "Selected template has placeholder_count=0. Generation is blocked. "
+        "Use Templates → Auto-Parameterize from Source Prospectus first."
+    )
     st.stop()
+
+form_spec = build_template_form_spec(template_placeholders, schema)
+if not form_spec["fields"]:
+    st.warning("No Talabat schema-mapped placeholders were detected in this template.")
 
 session = SessionLocal()
 try:
@@ -127,107 +140,79 @@ if source_document is not None or use_template_as_source:
         st.subheader("Outline JSON Preview")
         st.code(json.dumps(preview_data["outline"], indent=2), language="json")
 
-st.divider()
-st.subheader("Generation Inputs")
+latest_profile = get_latest_profile(project.id, schema["schema_id"], template.id)
+profile_available = latest_profile is not None
+load_profile = st.toggle("Load last saved deal profile", value=profile_available)
+if load_profile and latest_profile is not None:
+    if st.button("Load profile values into form", key="load_deal_profile_values"):
+        loaded_payload = json.loads(latest_profile.inputs_raw_json)
+        _set_form_values(_extract_values_for_paths(loaded_payload, form_spec["requested_paths"]))
+        st.success("Loaded last saved deal profile values.")
+elif load_profile and latest_profile is None:
+    st.info("No previously saved deal profile found for this project/template.")
 
-st.text_input("Issuer Name", key="issuer_name", help=_field_help("issuer.name"))
-st.number_input(
-    "Offer Shares",
-    min_value=0,
-    step=1,
-    key="offer_offer_shares",
-    help=_field_help("offer.offer_shares"),
-)
-st.number_input(
-    "Offer Price Range per Offer Share (AED) - Low",
-    min_value=0.0,
-    step=0.01,
-    format="%.2f",
-    key="offer_price_range_low_aed",
-    help=_field_help("offer.price_range_low_aed"),
-)
-st.number_input(
-    "Offer Price Range per Offer Share (AED) - High",
-    min_value=0.0,
-    step=0.01,
-    format="%.2f",
-    key="offer_price_range_high_aed",
-    help=_field_help("offer.price_range_high_aed"),
-)
-st.number_input(
-    "Nominal Value per Share (AED)",
-    min_value=0.0,
-    step=0.01,
-    format="%.2f",
-    key="offer_nominal_value_per_share_aed",
-    help=_field_help("offer.nominal_value_per_share_aed"),
-)
-st.number_input(
-    "Percentage Offered",
-    min_value=0.0,
-    max_value=100.0,
-    step=0.01,
-    format="%.2f",
-    key="offer_percentage_offered",
-    help=_field_help("offer.percentage_offered"),
-)
-st.text_input("Key Dates", key="key_dates", help=_field_help("key_dates"))
-st.text_area("Business Description", key="business_description", help=_field_help("business_description"))
-st.text_area("Risk Factors (one per line)", key="risk_factors_input", help=_field_help("risk_factors"))
-st.number_input(
-    "Tranche 1 Minimum Subscription (AED)",
-    min_value=0,
-    step=1,
-    key="tranche_1_min_subscription_aed",
-    help=_field_help("tranche_1.min_subscription_aed"),
-)
-st.number_input(
-    "Tranche 1 Increment (AED)",
-    min_value=0,
-    step=1,
-    key="tranche_1_increment_aed",
-    help=_field_help("tranche_1.increment_aed"),
-)
-st.number_input(
-    "Tranche 2 Minimum Subscription (AED)",
-    min_value=0,
-    step=1,
-    key="tranche_2_min_subscription_aed",
-    help=_field_help("tranche_2.min_subscription_aed"),
-)
+st.divider()
+st.subheader("Deal Profile Inputs (template placeholders only)")
+
+field_values: dict[str, Any] = {}
+for field in form_spec["fields"]:
+    path = field["path"]
+    key = _field_state_key(path)
+    label = field["label"]
+    help_text = _field_help(path)
+
+    field_type = field["type"]
+    if field_type in {"string", "rich_text"}:
+        widget = st.text_area if field_type == "rich_text" else st.text_input
+        if key not in st.session_state:
+            st.session_state[key] = ""
+        field_values[path] = widget(label, key=key, help=help_text)
+    elif field_type == "list_string":
+        if key not in st.session_state:
+            st.session_state[key] = ""
+        field_values[path] = st.text_area(
+            f"{label} (one per line)",
+            key=key,
+            help=help_text,
+        )
+    elif field_type == "integer":
+        if key not in st.session_state:
+            st.session_state[key] = 0
+        field_values[path] = st.number_input(label, step=1, key=key, help=help_text)
+    elif field_type in {"decimal", "percent"}:
+        if key not in st.session_state:
+            st.session_state[key] = 0.0
+        field_values[path] = st.number_input(
+            label,
+            step=0.01,
+            format="%.2f",
+            key=key,
+            help=help_text,
+        )
 
 source_document_id = source_document.id if source_document is not None else None
-inputs_payload = _build_inputs_payload(template.id, project.id, source_document_id, use_template_as_source)
-_, rendered_preview, _ = normalize_inputs(schema["schema_id"], inputs_payload)
+raw_inputs_payload = build_raw_inputs_payload(
+    schema_id=schema["schema_id"],
+    project_id=project.id,
+    template_id=template.id,
+    source_document_id=source_document_id,
+    use_template_as_source=use_template_as_source,
+    field_values=field_values,
+)
+
+normalized_payload, rendered_preview, _ = normalize_inputs(schema["schema_id"], raw_inputs_payload)
 
 st.subheader("Normalized Preview")
-st.json(
-    {
-        "Offer Shares": rendered_preview.get("offer.offer_shares"),
-        "Offer Price Range per Offer Share": rendered_preview.get("offer.price_range"),
-        "Nominal Value": rendered_preview.get("offer.nominal_value_per_share"),
-        "Percentage Offered": rendered_preview.get("offer.percentage_offered"),
-    }
-)
+st.json({key: rendered_preview[key] for key in sorted(rendered_preview) if key in template_placeholders})
 
 confirm_disclaimer = st.checkbox(
     "I confirm all facts are verified and that missing facts are marked as TBD or [[MISSING: field]]."
 )
 
 if st.button("Generate"):
-    required_errors: list[str] = []
+    required_errors = validate_required_paths(form_spec["required_paths"], raw_inputs_payload, rendered_preview)
+    unresolved_fields = find_unresolved_template_placeholders(template_placeholders, rendered_preview)
 
-    issuer_name = st.session_state.get("issuer_name", "").strip()
-    offer_shares_value = st.session_state.get("offer_offer_shares", 0)
-    low = st.session_state.get("offer_price_range_low_aed", 0.0)
-    high = st.session_state.get("offer_price_range_high_aed", 0.0)
-
-    if not issuer_name:
-        required_errors.append("issuer.name is required.")
-    if offer_shares_value is None or int(offer_shares_value) <= 0:
-        required_errors.append("Offer Shares must be greater than 0.")
-    if low is None or high is None or float(low) >= float(high):
-        required_errors.append("Offer Price Range requires low < high.")
     if source_document is None and not use_template_as_source:
         required_errors.append("Select a source document or enable 'Use selected template as source document'.")
 
@@ -237,12 +222,21 @@ if st.button("Generate"):
     elif not confirm_disclaimer:
         st.error("You must confirm the disclaimer before generating.")
     else:
-        result = generate_draft_docx(project.id, template.id, inputs_payload)
+        save_profile(
+            project_id=project.id,
+            schema_id=schema["schema_id"],
+            template_id=template.id,
+            inputs_raw=raw_inputs_payload,
+            inputs_normalized=normalized_payload,
+        )
+
+        result = generate_draft_docx(project.id, template.id, normalized_payload)
 
         output_path = Path(result["output_path"])
         st.success(f"Generation run #{result['generation_run_id']} completed.")
-        if result["missing_fields"]:
-            st.warning("Missing fields (template-driven): " + ", ".join(result["missing_fields"]))
+
+        if unresolved_fields:
+            st.warning("Missing fields (template placeholders only): " + ", ".join(unresolved_fields))
 
         with output_path.open("rb") as generated_file:
             st.download_button(

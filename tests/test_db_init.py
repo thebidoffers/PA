@@ -30,6 +30,7 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
         "templates",
         "prospectus_projects",
         "documents",
+        "deal_profiles",
         "extracted_structures",
         "generation_runs",
         "audit_logs",

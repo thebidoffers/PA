@@ -1,5 +1,6 @@
 from models.entities import (
     AuditLog,
+    DealProfile,
     Document,
     ExtractedStructure,
     GenerationRun,
@@ -13,6 +14,7 @@ __all__ = [
     "User",
     "Template",
     "ProspectusProject",
+    "DealProfile",
     "Document",
     "ExtractedStructure",
     "ProspectusAnalysis",
