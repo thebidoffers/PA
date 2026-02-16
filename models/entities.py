@@ -88,6 +88,24 @@ class GenerationRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class DealProfile(Base):
+    __tablename__ = "deal_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("prospectus_projects.id"), nullable=False, index=True)
+    template_id: Mapped[int | None] = mapped_column(ForeignKey("templates.id"), nullable=True, index=True)
+    schema_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    inputs_raw_json: Mapped[str] = mapped_column(Text, nullable=False)
+    inputs_normalized_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

@@ -190,3 +190,83 @@ def test_generate_draft_docx_supports_template_as_source(tmp_path, monkeypatch):
         assert output_path.exists()
     finally:
         session.close()
+
+
+def test_generation_uses_normalized_values_and_deal_profile_persists(tmp_path, monkeypatch):
+    db_file = tmp_path / "generation_profile.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_file}")
+
+    session_module = importlib.import_module("db.session")
+    importlib.reload(session_module)
+
+    session_module.Base.metadata.clear()
+    sys.modules.pop("models", None)
+    sys.modules.pop("models.entities", None)
+    models_module = importlib.import_module("models.entities")
+
+    init_db_module = importlib.import_module("db.init_db")
+    importlib.reload(init_db_module)
+    init_db_module.init_db()
+
+    generation_service = importlib.import_module("services.generation_service")
+    importlib.reload(generation_service)
+    normalization_service = importlib.import_module("services.normalization_service")
+    deal_profile_service = importlib.import_module("services.deal_profile_service")
+    importlib.reload(deal_profile_service)
+
+    template_path = tmp_path / "template_profile.docx"
+    template_doc = DocxDocument()
+    template_doc.add_paragraph("Offer Shares: {{offer.offer_shares}}")
+    template_doc.add_paragraph("Offer Price Range: {{offer.price_range}}")
+    template_doc.save(str(template_path))
+
+    session = session_module.SessionLocal()
+    try:
+        project = models_module.ProspectusProject(name="Project Profile Flow")
+        session.add(project)
+        session.flush()
+
+        template = models_module.Template(
+            name="Profile Template",
+            status="approved",
+            sha256="d" * 64,
+            file_path=str(template_path),
+        )
+        session.add(template)
+        session.commit()
+
+        raw_inputs = {
+            "schema_id": "talabat_v1",
+            "issuer": {"name": "Issuer X"},
+            "offer": {
+                "offer_shares": "3493236093",
+                "price_range_low_aed": "1.30",
+                "price_range_high_aed": "1.50",
+            },
+            "use_template_as_source": True,
+        }
+        normalized, _, _ = normalization_service.normalize_inputs("talabat_v1", raw_inputs)
+
+        saved = deal_profile_service.save_profile(
+            project_id=project.id,
+            schema_id="talabat_v1",
+            template_id=template.id,
+            inputs_raw=raw_inputs,
+            inputs_normalized=normalized,
+        )
+
+        result = generation_service.generate_draft_docx(project.id, template.id, normalized)
+
+        generated_doc = DocxDocument(result["output_path"])
+        generated_text = "\n".join(paragraph.text for paragraph in generated_doc.paragraphs)
+
+        assert "3,493,236,093" in generated_text
+        assert "AED 1.30 – AED 1.50" in generated_text
+
+        latest_profile = deal_profile_service.get_latest_profile(project.id, "talabat_v1", template.id)
+        assert latest_profile is not None
+        assert latest_profile.id == saved.id
+        persisted = json.loads(latest_profile.inputs_normalized_json)
+        assert persisted["offer"]["price_range"] == "AED 1.30 – AED 1.50"
+    finally:
+        session.close()
