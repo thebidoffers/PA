@@ -156,6 +156,7 @@ else:
 
         st.markdown("#### Deterministic Matching Inputs")
         issuer_name = st.text_input("issuer.name (required)", key="param_issuer_name")
+        issuer_short_name = st.text_input("issuer.short_name (optional)", key="param_issuer_short_name")
         offer_shares = st.number_input("offer.offer_shares (required)", min_value=0, step=1, key="param_offer_shares")
         percentage_offered = st.number_input(
             "offer.percentage_offered (optional)", min_value=0.0, max_value=100.0, step=0.01, format="%.2f", key="param_percentage_offered"
@@ -169,6 +170,7 @@ else:
         price_high = st.number_input(
             "offer.price_range_high_aed (optional)", min_value=0.0, step=0.01, format="%.2f", key="param_price_high"
         )
+        dry_run = st.checkbox("Dry run (analyze replacements only, do not create template)", value=False, key="param_dry_run")
 
         if st.button("Run Auto-Parameterize", key="run_auto_parameterize"):
             errors: list[str] = []
@@ -208,7 +210,10 @@ else:
                     base_template_id = base_template.id
 
                 inputs = {
-                    "issuer": {"name": issuer_name.strip()},
+                    "issuer": {
+                        "name": issuer_name.strip(),
+                        "short_name": issuer_short_name.strip() or None,
+                    },
                     "offer": {
                         "offer_shares": int(offer_shares),
                         "percentage_offered": float(percentage_offered) if float(percentage_offered) > 0 else None,
@@ -227,9 +232,37 @@ else:
                     base_template_id=base_template_id,
                     source_document_id=selected_source.id,
                     project_id=selected_project.id,
+                    dry_run=dry_run,
                 )
-                st.success(
-                    f"Auto-parameterization complete. New template #{result['template_id']} created. Analysis #{analysis_id} saved."
-                )
-                st.json(result["parameterization_report"])
-                st.caption(f"Placeholder count: {result['parameterization_report']['placeholder_count']}")
+                if dry_run:
+                    st.success(f"Dry run complete. No file was written. Analysis #{analysis_id} saved.")
+                else:
+                    st.success(
+                        f"Auto-parameterization complete. New template #{result['template_id']} created. Analysis #{analysis_id} saved."
+                    )
+
+                report = result["parameterization_report"]
+                st.caption(f"Placeholder count: {report['placeholder_count']}")
+                st.write({"placeholders": report["placeholders"]})
+
+                field_rows = []
+                for field, stats in report["fields"].items():
+                    field_rows.append(
+                        {
+                            "field": field,
+                            "found_count": stats["found_count"],
+                            "replaced_count": stats["replaced_count"],
+                            "skipped_count": stats["skipped_count"],
+                            "sample_locations": ", ".join(item["location_path"] for item in stats["sample_locations"]),
+                        }
+                    )
+                st.dataframe(field_rows, use_container_width=True)
+
+                if report["fields"]["issuer.name"]["replaced_count"] < 5:
+                    st.warning(
+                        "Low issuer.name replacement count (< 5). The template may still retain many source issuer references."
+                    )
+
+                if report["notes"]:
+                    for note in report["notes"]:
+                        st.warning(note)
