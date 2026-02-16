@@ -1,4 +1,5 @@
 import os
+import sys
 
 import pytest
 
@@ -10,14 +11,15 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
     db_file = tmp_path / "test_init.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_file}")
 
+    for module_name in ("models.entities", "db.init_db", "db.session"):
+        sys.modules.pop(module_name, None)
+
     import importlib
 
     session_module = importlib.import_module("db.session")
-    importlib.reload(session_module)
+    init_db_module = importlib.import_module("db.init_db")
 
-    import db.init_db as init_db_module
-
-    importlib.reload(init_db_module)
+    init_db_module.init_db()
     init_db_module.init_db()
 
     inspector = inspect(session_module.engine)

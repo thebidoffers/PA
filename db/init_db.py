@@ -1,8 +1,10 @@
-import importlib
-
 from sqlalchemy import text
 
 from db.session import Base, engine
+
+# Import models exactly once so SQLAlchemy mappings are registered on Base.metadata.
+# NOTE: Do not reload this module; reloading remaps classes and duplicates tables.
+import models.entities  # noqa: F401
 
 
 def _column_exists(connection, table: str, column: str) -> bool:
@@ -24,13 +26,7 @@ def _apply_lightweight_migrations() -> None:
             connection.execute(text("ALTER TABLE templates ADD COLUMN metadata_json TEXT"))
 
 
-def _load_models() -> None:
-    entities_module = importlib.import_module("models.entities")
-    importlib.reload(entities_module)
-
-
 def init_db() -> None:
-    _load_models()
     Base.metadata.create_all(bind=engine)
     _apply_lightweight_migrations()
 
