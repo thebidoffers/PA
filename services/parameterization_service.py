@@ -45,6 +45,99 @@ SHORT_NAME_INFERENCE_PATTERN = re.compile(
 )
 
 
+def _iter_text_blocks(document: DocxDocument) -> list[tuple[str, str]]:
+    blocks: list[tuple[str, str]] = []
+    for container, container_path in _iter_containers(document):
+        for p_index, paragraph in enumerate(container.paragraphs):
+            text = paragraph.text.strip()
+            if not text:
+                continue
+            if container_path == "document":
+                location_path = f"document/paragraphs/{p_index}"
+            else:
+                location_path = f"{container_path}/paragraphs/{p_index}"
+            blocks.append((location_path, text))
+    return blocks
+
+
+def extract_source_deal_values(source_docx_path: str) -> dict[str, Any]:
+    document = DocxDocument(source_docx_path)
+    blocks = _iter_text_blocks(document)
+
+    patterns: dict[str, tuple[re.Pattern[str], Any]] = {
+        "issuer.name": (re.compile(r"\b([A-Z][A-Za-z0-9&\-. ]+?\s+(?:plc|PJSC|LLC|L\.L\.C\.))\b"), str),
+        "offer.offer_shares": (re.compile(r"offer\s+shares\s*:\s*([\d,]+)", re.IGNORECASE), int),
+        "offer.percentage_offered": (
+            re.compile(r"percentage\s+offered\s*:\s*([\d.]+)%", re.IGNORECASE),
+            float,
+        ),
+        "offer.nominal_value_per_share_aed": (
+            re.compile(r"nominal\s+value\s+per\s+share\s*:\s*AED\s*([\d.]+)", re.IGNORECASE),
+            float,
+        ),
+        "offer.price_range_low_aed": (
+            re.compile(r"offer\s+price\s+range\s*:\s*AED\s*([\d.]+)\s*[\-–—]\s*AED\s*([\d.]+)", re.IGNORECASE),
+            float,
+        ),
+        "offer.price_range_high_aed": (
+            re.compile(r"offer\s+price\s+range\s*:\s*AED\s*([\d.]+)\s*[\-–—]\s*AED\s*([\d.]+)", re.IGNORECASE),
+            float,
+        ),
+    }
+
+    values: dict[str, Any] = {}
+    evidence: dict[str, list[dict[str, Any]]] = {}
+
+    for field, (pattern, caster) in patterns.items():
+        for location_path, text in blocks:
+            match = pattern.search(text)
+            if not match:
+                continue
+            raw = match.group(1)
+            if field == "offer.price_range_high_aed":
+                raw = match.group(2)
+            parsed: Any = raw
+            if caster is int:
+                parsed = int(str(raw).replace(",", ""))
+            elif caster is float:
+                parsed = float(raw)
+            elif caster is str:
+                parsed = str(raw).strip()
+
+            values[field] = parsed
+            evidence.setdefault(field, []).append(
+                {
+                    "location_path": location_path,
+                    "snippet": text[:180],
+                    "confidence": 0.92,
+                }
+            )
+            break
+
+    return {"values": values, "evidence": evidence}
+
+
+def _nested_payload(flat_values: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in flat_values.items():
+        current = payload
+        parts = key.split(".")
+        for part in parts[:-1]:
+            current = current.setdefault(part, {})
+        current[parts[-1]] = value
+    return payload
+
+
+def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _merge_dicts(result[key], value)
+        elif value not in (None, "", {}):
+            result[key] = value
+    return result
+
+
 def _replace_match_in_runs(paragraph: Paragraph, pattern: re.Pattern[str], replacement: str) -> int:
     if not paragraph.runs:
         return 0
@@ -354,11 +447,14 @@ def parameterize_template_from_source(
     aliases: dict[str, list[str]] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    extracted = extract_source_deal_values(source_docx_path)
+    merged_inputs = _merge_dicts(_nested_payload(extracted["values"]), inputs)
+
     _ = aliases
     analysis = analyze_prospectus(
         source_docx_path,
-        issuer_name=str(inputs.get("issuer", {}).get("name") or "").strip() or None,
-        offer_shares=inputs.get("offer", {}).get("offer_shares"),
+        issuer_name=str(merged_inputs.get("issuer", {}).get("name") or "").strip() or None,
+        offer_shares=merged_inputs.get("offer", {}).get("offer_shares"),
     )
     allowed_paths = {
         block["location_path"]
@@ -367,7 +463,7 @@ def parameterize_template_from_source(
     }
 
     document = DocxDocument(source_docx_path)
-    rules = _build_rules(document, inputs)
+    rules = _build_rules(document, merged_inputs)
     field_reports = {field: {"found_count": 0, "replaced_count": 0, "skipped_count": 0, "sample_locations": []} for field in TARGET_FIELDS}
 
     for rule in rules:
@@ -415,6 +511,7 @@ def parameterize_template_from_source(
             "new_template_docx_path": None,
             "parameterization_report": report,
             "analysis": analysis,
+            "source_extraction": extracted,
         }
 
     session = SessionLocal()
@@ -437,6 +534,7 @@ def parameterize_template_from_source(
             "parameterized_from_document_id": source_document_id,
             "placeholder_count": placeholder_count,
             "analysis_counts": analysis["counts"],
+            "source_extraction": extracted,
             "parameterization": report,
         }
 
@@ -457,6 +555,7 @@ def parameterize_template_from_source(
             "new_template_docx_path": str(output_path),
             "parameterization_report": report,
             "analysis": analysis,
+            "source_extraction": extracted,
         }
     finally:
         session.close()
