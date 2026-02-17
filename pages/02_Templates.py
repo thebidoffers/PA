@@ -7,6 +7,7 @@ from docx import Document as DocxDocument
 from db.init_db import init_db
 from db.session import SessionLocal
 from models import Document, ProspectusProject, Template
+from services.document_service import get_project_source_docx_documents
 from services.file_service import save_uploaded_file
 from services.parameterization_service import parameterize_template_from_source
 from services.placeholder_service import extract_placeholders_from_docx
@@ -105,7 +106,9 @@ else:
             placeholders = extract_placeholders_from_docx(doc)
             st.write({"placeholder_count": len(placeholders), "placeholders": placeholders})
             if not placeholders:
-                st.warning("No placeholders found. This is likely a static prospectus.")
+                st.info(
+                    "This template has no placeholders. If it’s a raw prospectus, run Auto-Parameterize to create a parameterized template."
+                )
 
 st.divider()
 st.subheader("Auto-Parameterize from Source Prospectus")
@@ -122,17 +125,35 @@ else:
 
     session = SessionLocal()
     try:
-        project_docs = (
+        project_docs = get_project_source_docx_documents(session, selected_project.id)
+        project_docs_debug = (
             session.query(Document)
-            .filter(Document.project_id == selected_project.id, Document.file_name.ilike("%.docx"))
+            .filter(Document.project_id == selected_project.id)
             .order_by(Document.created_at.desc())
             .all()
         )
     finally:
         session.close()
 
+    st.caption(f"Source DOCX found: {len(project_docs)}")
+    with st.expander("Debug: Source DOCX discovery"):
+        st.write({"selected_project_id": selected_project.id})
+        st.write(
+            {
+                "docs_found": [
+                    {
+                        "id": d.id,
+                        "filename": d.file_name,
+                        "document_type": d.doc_type,
+                        "path": d.file_path,
+                    }
+                    for d in project_docs_debug
+                ]
+            }
+        )
+
     if not project_docs:
-        st.warning("No DOCX source documents found for this project.")
+        st.warning("Upload a source DOCX in Your Prospectus for this project.")
     else:
         selected_source = st.selectbox(
             "Source DOCX document",

@@ -5,6 +5,7 @@ import streamlit as st
 from db.init_db import init_db
 from db.session import SessionLocal
 from models import Document, ProspectusProject
+from services.document_service import normalize_document_type
 from services.file_service import save_uploaded_file
 
 init_db()
@@ -58,7 +59,6 @@ else:
 
     with st.form("upload_project_document_form"):
         uploaded_doc = st.file_uploader("Upload PDF/DOCX", type=["pdf", "docx"])
-        doc_type = st.selectbox("Document type", options=["original", "draft", "final"])
         upload_document = st.form_submit_button("Upload Document")
 
     if upload_document:
@@ -67,9 +67,10 @@ else:
         else:
             session = SessionLocal()
             try:
+                normalized_doc_type = normalize_document_type(uploaded_doc.name)
                 existing_versions = (
                     session.query(Document)
-                    .filter(Document.project_id == selected_project_id, Document.doc_type == doc_type)
+                    .filter(Document.project_id == selected_project_id, Document.doc_type == normalized_doc_type)
                     .count()
                 )
                 next_version = existing_versions + 1
@@ -79,7 +80,7 @@ else:
 
                 doc = Document(
                     project_id=selected_project_id,
-                    doc_type=doc_type,
+                    doc_type=normalized_doc_type,
                     file_name=uploaded_doc.name,
                     file_path=str(file_path),
                     sha256=file_sha256,
@@ -135,21 +136,19 @@ else:
                         key=f"document_download_{d.id}",
                     )
 
-        final_docs = [d for d in documents if d.doc_type == "final"]
-        if final_docs:
-            target_doc = st.selectbox(
-                "Select final document to lock",
-                options=final_docs,
-                format_func=lambda d: f"ID {d.id} | v{d.version} | {d.file_name}",
-            )
-            if st.button("Lock selected final"):
-                session = SessionLocal()
-                try:
-                    db_doc = session.get(Document, target_doc.id)
-                    db_doc.is_locked = True
-                    project = session.get(ProspectusProject, selected_project_id)
-                    project.locked_final = True
-                    session.commit()
-                    st.success("Selected final document locked.")
-                finally:
-                    session.close()
+        target_doc = st.selectbox(
+            "Select document to lock",
+            options=documents,
+            format_func=lambda d: f"ID {d.id} | {d.doc_type} v{d.version} | {d.file_name}",
+        )
+        if st.button("Lock selected document"):
+            session = SessionLocal()
+            try:
+                db_doc = session.get(Document, target_doc.id)
+                db_doc.is_locked = True
+                project = session.get(ProspectusProject, selected_project_id)
+                project.locked_final = True
+                session.commit()
+                st.success("Selected document locked.")
+            finally:
+                session.close()
