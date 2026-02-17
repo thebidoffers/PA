@@ -1,8 +1,11 @@
+
+*.db
+*.pyc
+.DS_Store
+.env
+.streamlit/secrets.toml
 .venv/
 __pycache__/
-*.pyc
-.env
-*.db
-.DS_Store
-.streamlit/secrets.toml
+generated/
+outputs/
 storage/
